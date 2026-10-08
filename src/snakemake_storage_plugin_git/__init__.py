@@ -435,6 +435,7 @@ class StorageObject(StorageObjectRead, StorageObjectWrite):
                 ),
             )
             self._check_no_default_branch(repo)
+            self._checkout_custom_head(repo)
         except pygit2.GitError as e:
             error_handler(
                 self.provider.logger,
