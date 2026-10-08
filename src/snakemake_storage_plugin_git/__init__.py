@@ -2,7 +2,7 @@ from dataclasses import dataclass, field
 from typing import Any, Optional, List
 
 import os
-from urllib.parse import urlparse
+from urllib.parse import urldefrag, urlparse
 import pygit2
 
 from snakemake_interface_storage_plugins.settings import StorageProviderSettingsBase
@@ -217,6 +217,12 @@ class StorageProvider(StorageProviderBase):
                 type=QueryType.INPUT,
                 description="The remote git repository is accessed via SSH.",
             ),
+            ExampleQuery(
+                query="https://example.com/repo.git#v1.0",
+                type=QueryType.INPUT,
+                description="The git ref (tag, branch or commit) v1.0 of the remote "
+                "git repository is checked out (in its own local copy).",
+            ),
         ]
 
     def rate_limiter_key(self, query: str, operation: Operation) -> Any:
@@ -387,7 +393,17 @@ class StorageObject(StorageObjectRead, StorageObjectWrite):
         if not url_path:
             raise WorkflowError(f"The URL path is missing: {self.query}.")
 
-        return f"{parsed_query.netloc}+{url_path}"
+        directory = f"{parsed_query.netloc}+{url_path}"
+        # Each git ref gets its own local copy
+        return f"{directory}@{self._ref()}" if self._ref() else directory
+
+    def _repository_url(self) -> str:
+        """Return the URL of the repository, i.e. the query without fragment."""
+        return urldefrag(self.query).url
+
+    def _ref(self) -> str:
+        """Return the git ref to check out (the fragment of the query), if any."""
+        return urldefrag(self.query).fragment
 
     def _clone_or_pull(self):
         if self.query in self.provider.done_queries:
@@ -424,7 +440,7 @@ class StorageObject(StorageObjectRead, StorageObjectWrite):
         try:
             self.provider.logger.info(f"Cloning {self.query} to {self.local_path()}")
             repo = pygit2.clone_repository(
-                self.query,
+                self._repository_url(),
                 self.local_path(),
                 callbacks=RemoteSSHCallbacks(
                     username=self.provider.settings.ssh_username,
@@ -434,7 +450,7 @@ class StorageObject(StorageObjectRead, StorageObjectWrite):
                 ),
             )
             self._check_no_default_branch(repo)
-            self._checkout_custom_head(repo)
+            self._checkout_head(repo)
         except pygit2.GitError as e:
             error_handler(
                 self.provider.logger,
@@ -481,8 +497,41 @@ class StorageObject(StorageObjectRead, StorageObjectWrite):
                 e,
             )
 
-        if repo and hasattr(self.provider.settings, "custom_heads"):
+        if repo:
+            self._checkout_head(repo)
+
+    def _checkout_head(self, repo):
+        """Check out the git ref of the query, if any, otherwise the custom head."""
+        if self._ref():
+            self._checkout_ref(repo, self._ref())
+        elif hasattr(self.provider.settings, "custom_heads"):
             self._checkout_custom_head(repo)
+
+    def _checkout_ref(self, repo, ref):
+        """Check out a git ref (detached HEAD), trying it as a tag, as a remote
+        branch (up to date after fetching) and as any other revision (e.g. a
+        commit)."""
+        self.provider.logger.info(f"Checking out {ref} in {self.local_path()}")
+        try:
+            for revision in (f"refs/tags/{ref}", f"refs/remotes/origin/{ref}", ref):
+                try:
+                    commit = repo.revparse_single(revision).peel(pygit2.Commit)
+                    break
+                except (KeyError, ValueError, pygit2.GitError):
+                    continue
+            else:
+                raise WorkflowError(
+                    f"Git ref {ref} not found in {self._repository_url()}"
+                )
+            repo.checkout_tree(commit, strategy=pygit2.GIT_CHECKOUT_FORCE)
+            repo.set_head(commit.id)
+        except Exception as e:
+            error_handler(
+                self.provider.logger,
+                f"Failed to check out {ref}",
+                self.provider.settings.ignore_errors,
+                e,
+            )
 
     def _checkout_custom_head(self, repo):
         if not self.provider.settings.custom_heads:
