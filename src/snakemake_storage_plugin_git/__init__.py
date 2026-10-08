@@ -318,11 +318,10 @@ class StorageObject(StorageObjectRead, StorageObjectWrite):
     @retry_decorator
     def exists(self) -> bool:
         # return True if the object exists
-        if (
-            hasattr(self.provider.settings, "_is_test")
-            and self.provider.settings._is_test
-        ):
-            self._clone_or_pull()
+        # Snakemake calls inventory() only for the inputs of the target jobs, so
+        # the repository has to be cloned (or pulled) here too (at most once per
+        # run, see _clone_or_pull).
+        self._clone_or_pull()
         return os.path.exists(self.local_path())
 
     @retry_decorator
