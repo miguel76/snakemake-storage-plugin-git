@@ -2,6 +2,7 @@ from dataclasses import dataclass, field
 from typing import Any, Optional, List
 
 import os
+import re
 from urllib.parse import urldefrag, urlparse
 import pygit2
 
@@ -405,13 +406,37 @@ class StorageObject(StorageObjectRead, StorageObjectWrite):
         """Return the git ref to check out (the fragment of the query), if any."""
         return urldefrag(self.query).fragment
 
+    def _has_fixed_ref(self) -> bool:
+        """Return whether the git ref of the query is in the local copy as a tag
+        or as a commit id (not as a branch, which can move)."""
+        ref = self._ref()
+        if not ref:
+            return False
+        try:
+            repo = pygit2.Repository(str(self.local_path()))
+        except pygit2.GitError:
+            return False
+        if f"refs/tags/{ref}" in repo.references:
+            return True
+        if not re.fullmatch(r"[0-9a-f]{7,40}", ref) or (
+            f"refs/remotes/origin/{ref}" in repo.references
+        ):
+            return False
+        try:
+            repo.revparse_single(ref).peel(pygit2.Commit)
+            return True
+        except (KeyError, ValueError, pygit2.GitError):
+            return False
+
     def _clone_or_pull(self):
         if self.query in self.provider.done_queries:
             self.provider.limit_mode = False
             return
 
         if os.path.exists(self.local_path()):
-            if self.provider.settings.fetch_to_update:
+            # A tag or a commit already in the local copy cannot change, so it is
+            # not fetched again
+            if self.provider.settings.fetch_to_update and not self._has_fixed_ref():
                 try:
                     self._pull_repository()
                 except pygit2.GitError as e:

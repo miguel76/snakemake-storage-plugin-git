@@ -66,3 +66,32 @@ def test_unknown_ref(provider):
     # (exists() would raise the same error, after retrying)
     with pytest.raises(WorkflowError, match="no-such-ref not found"):
         provider.object(f"{REPOSITORY}#no-such-ref")._clone_or_pull()
+
+
+def fetches(provider, monkeypatch, query) -> int:
+    """Number of fetches of an existing local copy of a query in a new run."""
+    storage_object = provider.object(query)
+    checked_out(storage_object)
+    provider.done_queries.clear()
+    calls = []
+    monkeypatch.setattr(
+        type(storage_object), "_pull_repository", lambda self: calls.append(self)
+    )
+    checked_out(storage_object)
+    return len(calls)
+
+
+def test_tag_not_fetched_again(provider, monkeypatch):
+    assert fetches(provider, monkeypatch, f"{REPOSITORY}#{TAG}") == 0
+
+
+def test_commit_not_fetched_again(provider, monkeypatch):
+    assert fetches(provider, monkeypatch, f"{REPOSITORY}#{COMMIT[:10]}") == 0
+
+
+def test_branch_fetched_again(provider, monkeypatch):
+    assert fetches(provider, monkeypatch, f"{REPOSITORY}#main") == 1
+
+
+def test_repository_without_ref_fetched_again(provider, monkeypatch):
+    assert fetches(provider, monkeypatch, REPOSITORY) == 1

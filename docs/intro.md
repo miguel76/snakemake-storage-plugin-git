@@ -19,3 +19,7 @@ rule process:
 
 The ref is looked up as a tag, then as a branch (of the remote, so up to date
 after fetching), then as any other revision (e.g. a commit id).
+
+An existing local copy is fetched at each run (with `fetch_to_update`, the
+default), unless its ref is already there as a tag or a commit id, which cannot
+change.
